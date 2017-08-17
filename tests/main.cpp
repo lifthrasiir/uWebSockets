@@ -773,7 +773,7 @@ void testHTTP() {
                 controlData(res, data, length, remainingBytes);
                 return;
             }
-        } else if (req.getUrl().toString() == "/packedTest") {
+        } else if (req.getUrl().toString() == "/packedFirstTest" || req.getUrl().toString() == "/packedSecondTest") {
             if (req.getMethod() == uWS::HttpMethod::METHOD_GET) {
                 expectedRequests++;
                 res->end();
@@ -932,14 +932,25 @@ void testHTTP() {
 
         // segmented second GET
         nc = popen("nc localhost 3000 &> /dev/null", "w");
-        fputs("GET /packedTest HTTP/1.1\r\n\r\nGET /packedTest HTTP/", nc);
+        fputs("GET /packedFirstTest HTTP/1.1\r\n\r\nGET /packedSecondTest HTTP/", nc);
         fflush(nc);
         usleep(100000);
         fputs("1.1\r\n\r\n", nc);
         pclose(nc);
 
         nc = popen("nc localhost 3000 &> /dev/null", "w");
-        fputs("GET /packedTest HTTP/1.1\r\n\r\nGET /packedTest HTTP/1.1\r\n\r\n", nc);
+        fputs("GET /packedFirstTest HTTP/1.1\r\n\r\nGET /packedSecondTest HTTP/1.1\r\n\r\n", nc);
+        pclose(nc);
+
+        // large segmented data with segmented headers
+        nc = popen("nc localhost 3000 &> /dev/null", "w");
+        fputs("POST /postTest HTTP/1.1\r\nContent-Length: 7000\r\n", nc);
+        fflush(nc);
+        usleep(100000);
+        fputs("\r\n", nc);
+        for (int i = 0; i < 700; i++) {
+            fputs("0123456789", nc);
+        }
         pclose(nc);
 
         // out of order responses
@@ -951,7 +962,7 @@ void testHTTP() {
         nc = popen("nc localhost 3000 &> /dev/null", "w");
         fputs("PUT /closeServer HTTP/1.1\r\n\r\n", nc);
         pclose(nc);
-        if (expectedRequests != 18) {
+        if (expectedRequests != 19) {
             std::cerr << "FAILURE: expectedRequests differ: " << expectedRequests << std::endl;
             exit(-1);
         }

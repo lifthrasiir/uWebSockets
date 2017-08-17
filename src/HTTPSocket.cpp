@@ -71,13 +71,22 @@ uS::Socket *HttpSocket<isServer>::onData(uS::Socket *s, char *data, size_t lengt
         }
     }
 
+    char *additionalData = nullptr;
+    char *additionalDataEnd = nullptr;
+    const size_t fullLength = length;
     if (FORCE_SLOW_PATH || httpSocket->httpBuffer.length()) {
-        if (httpSocket->httpBuffer.length() + length > MAX_HEADER_BUFFER_SIZE) {
-            httpSocket->onEnd(httpSocket);
-            return httpSocket;
+        auto lastLength = httpSocket->httpBuffer.length();
+        if (lastLength + length > MAX_HEADER_BUFFER_SIZE) {
+            // try to check if the new buffer contains the end of headers and
+            // the total header size does not exceed the limit in order to tame
+            // unconventional clients that send header lines in multiple calls
+            additionalDataEnd = data + length;
+            *additionalDataEnd = '\r'; // it might be reused for cursor!
+            length = MAX_HEADER_BUFFER_SIZE - lastLength;
+            additionalData = data + length;
         }
 
-        httpSocket->httpBuffer.reserve(httpSocket->httpBuffer.length() + length + WebSocketProtocol<uWS::CLIENT, WebSocket<uWS::CLIENT>>::CONSUME_POST_PADDING);
+        httpSocket->httpBuffer.reserve(lastLength + length + WebSocketProtocol<uWS::CLIENT, WebSocket<uWS::CLIENT>>::CONSUME_POST_PADDING);
         httpSocket->httpBuffer.append(data, length);
         data = (char *) httpSocket->httpBuffer.data();
         length = httpSocket->httpBuffer.length();
@@ -140,7 +149,17 @@ uS::Socket *HttpSocket<isServer>::onData(uS::Socket *s, char *data, size_t lengt
                         Header contentLength;
                         if (req.getMethod() != HttpMethod::METHOD_GET && (contentLength = req.getHeader("content-length", 14))) {
                             httpSocket->contentLength = atoi(contentLength.value);
-                            size_t bytesToRead = std::min<int>(httpSocket->contentLength, end - cursor);
+
+                            // switch back to the additional buffer if the headers are cut at the buffer boundary
+                            // but fit to the limit themselves; it's guaranteed that the additional buffer contains
+                            // the beginning of the POST data (otherwise we have already called httpRequestHandler).
+                            if (additionalData) {
+                                cursor = additionalData - (end - cursor);
+                                end = additionalDataEnd;
+                                additionalData = additionalDataEnd = nullptr;
+                            }
+
+                            size_t bytesToRead = std::min<size_t>(httpSocket->contentLength, end - cursor);
                             Group<SERVER>::from(httpSocket)->httpRequestHandler(res, req, cursor, bytesToRead, httpSocket->contentLength -= bytesToRead);
                             cursor += bytesToRead;
                         } else {
@@ -169,6 +188,11 @@ uS::Socket *HttpSocket<isServer>::onData(uS::Socket *s, char *data, size_t lengt
                     webSocket->cork(true);
                     Group<isServer>::from(webSocket)->connectionHandler(webSocket, req);
                     if (!(webSocket->isClosed() || webSocket->isShuttingDown())) {
+                        // same as above
+                        if (additionalData) {
+                            cursor = additionalData - (end - cursor);
+                            end = additionalDataEnd;
+                        }
                         WebSocketProtocol<isServer, WebSocket<isServer>>::consume(cursor, end - cursor, webSocket);
                     }
                     webSocket->cork(false);
@@ -182,7 +206,7 @@ uS::Socket *HttpSocket<isServer>::onData(uS::Socket *s, char *data, size_t lengt
             }
         } else {
             if (!httpSocket->httpBuffer.length()) {
-                if (length > MAX_HEADER_BUFFER_SIZE) {
+                if (fullLength > MAX_HEADER_BUFFER_SIZE) {
                     httpSocket->onEnd(httpSocket);
                 } else {
                     httpSocket->httpBuffer.append(lastCursor, end - lastCursor);
